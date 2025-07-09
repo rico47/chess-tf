@@ -1,37 +1,77 @@
-# chess_logic.py
-
 import chess
 import random
+import os  # Dodano import os
 
+# Importowanie TensorFlow i NumPy
 try:
     import tensorflow as tf
     import numpy as np
 
     print("TensorFlow załadowany.")
     _TENSORFLOW_AVAILABLE = True
+    MODEL_PATH = 'trained_chess_model.h5'  # Ścieżka do wytrenowanego modelu
 except ImportError:
     print("TensorFlow nie jest zainstalowany. AI będzie używać losowych ruchów.")
     _TENSORFLOW_AVAILABLE = False
 except Exception as e:
-    print(f"Błąd podczas ładowania TensorFlow/modelu: {e}")
+    print(f"Błąd podczas ładowania TensorFlow: {e}")
     print("AI będzie używać losowych ruchów.")
     _TENSORFLOW_AVAILABLE = False
 
 
+# Klasa dla AI gracza
 class ChessAIPlayer:
-    # ... (reszta kodu ChessAIPlayer bez zmian) ...
     def __init__(self, use_tensorflow=False):
         self.use_tensorflow = use_tensorflow and _TENSORFLOW_AVAILABLE
         self.tf_model = None
         if self.use_tensorflow:
-            print("AI użyje symbolicznego TensorFlow.")
-            self.tf_model = lambda board_representation: np.random.rand() * 2 - 1
-        else:
+            if os.path.exists(MODEL_PATH):
+                print(f"Ładowanie wytrenowanego modelu TensorFlow z: {MODEL_PATH}")
+                try:
+                    self.tf_model = tf.keras.models.load_model(MODEL_PATH)
+                    print("Model TensorFlow załadowany pomyślnie.")
+                except Exception as e:
+                    print(f"Błąd podczas ładowania modelu TensorFlow: {e}")
+                    print("AI przełączy się na losowe ruchy z powodu błędu modelu.")
+                    self.use_tensorflow = False
+            else:
+                print(f"Ostrzeżenie: Model '{MODEL_PATH}' nie znaleziony. AI użyje losowych ruchów.")
+                print(
+                    "Uruchom 'chess_dataset_generator.py', a następnie 'chess_model_trainer.py' aby wytrenować model.")
+                self.use_tensorflow = False
+
+        if not self.use_tensorflow:
             print("AI użyje prostego losowego algorytmu.")
 
     def _board_to_input_representation(self, board):
-        fen_string = board.fen().split(' ')[0]
-        return np.array([ord(c) for c in fen_string])
+        """
+        Tworzy wektorową reprezentację szachownicy dla sieci neuronowej.
+        Musimy użyć tej samej funkcji, której użyliśmy do generowania danych treningowych.
+        """
+        representation = np.zeros((13, 8, 8), dtype=np.float32)
+
+        piece_to_index = {
+            chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
+            chess.ROOK: 3, chess.QUEEN: 4, chess.KING: 5
+        }
+
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece:
+                row, col = chess.square_rank(square), chess.square_file(square)
+                piece_idx = piece_to_index[piece.piece_type]
+
+                if piece.color == chess.WHITE:
+                    representation[piece_idx, row, col] = 1.0
+                else:
+                    representation[piece_idx + 6, row, col] = 1.0
+
+        if board.turn == chess.WHITE:
+            representation[12, :, :] = 1.0
+        else:
+            representation[12, :, :] = 0.0
+
+        return representation.flatten()  # Spłaszczamy do jednowymiarowego wektora
 
     def get_best_move(self, board, depth=2):
         if self.use_tensorflow and self.tf_model:
@@ -40,6 +80,8 @@ class ChessAIPlayer:
 
             for move in board.legal_moves:
                 board.push(move)
+                # Zmieniamy argument 'maximizing_player' w _minimax
+                # Ocenę na końcu rekurencji uzyskujemy z modelu TensorFlow
                 score = self._minimax(board, depth - 1, not board.turn)
                 board.pop()
 
@@ -63,7 +105,12 @@ class ChessAIPlayer:
                 return -1000000 if board.turn == chess.WHITE else 1000000
             elif board.is_stalemate():
                 return 0
-            return self.tf_model(self._board_to_input_representation(board))
+
+            # Użyj wytrenowanego modelu TensorFlow do oceny
+            board_rep = self._board_to_input_representation(board)
+            # Model przewiduje na batchu, więc trzeba mu podać (1, input_shape)
+            evaluation = self.tf_model.predict(np.expand_dims(board_rep, axis=0), verbose=0)[0][0]
+            return evaluation
 
         if maximizing_player:
             max_eval = -float('inf')
@@ -89,9 +136,10 @@ class ChessAIPlayer:
         return None
 
     def quit_engine(self):
-        print("Symboliczny model TensorFlow nie wymaga zamykania.")
+        print("TensorFlow AI: Zwalnianie zasobów (jeśli to konieczne).")
 
 
+# ... (reszta kodu ChessGameLogic bez zmian) ...
 class ChessGameLogic:
     def __init__(self):
         self.board = chess.Board()
@@ -113,6 +161,7 @@ class ChessGameLogic:
             self.ai_engine = None
 
         if ai_type == 'AI_TF':
+            # Teraz ChessAIPlayer będzie próbował załadować wytrenowany model
             self.ai_engine = ChessAIPlayer(use_tensorflow=True)
             self.ai_depth = skill_level if skill_level is not None else 2
         elif ai_type == 'AI_RANDOM':
@@ -173,16 +222,7 @@ class ChessGameLogic:
         return self.board.piece_at(square)
 
     def reset_game(self):
-        """
-        Resetuje szachownicę do pozycji początkowej.
-        Usunięto resetowanie typów graczy, ponieważ są one konfigurowane przez GUI.
-        """
         self.board.reset()
-        # Usunięto:
-        # self.players = {
-        #     chess.WHITE: 'HUMAN',
-        #     chess.BLACK: 'HUMAN'
-        # }
 
     def get_board_state(self):
         state = {}
